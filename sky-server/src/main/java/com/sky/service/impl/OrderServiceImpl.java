@@ -2,22 +2,24 @@ package com.sky.service.impl;
 
 import com.sky.constant.MessageConstant;
 import com.sky.context.BaseContext;
+import com.sky.dto.OrdersPaymentDTO;
 import com.sky.dto.OrdersSubmitDTO;
 import com.sky.entity.AddressBook;
 import com.sky.entity.OrderDetail;
 import com.sky.entity.Orders;
 import com.sky.entity.ShoppingCart;
 import com.sky.exception.AddressBookBusinessException;
+import com.sky.exception.OrderBusinessException;
 import com.sky.exception.ShoppingCartBusinessException;
 import com.sky.mapper.AddressBookMapper;
 import com.sky.mapper.OrderDetailMapper;
 import com.sky.mapper.OrderMapper;
 import com.sky.mapper.ShoppingCartMapper;
 import com.sky.service.OrderService;
+import com.sky.vo.OrderPaymentVO;
 import com.sky.vo.OrderSubmitVO;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,7 +43,7 @@ public class OrderServiceImpl implements OrderService {
     private ShoppingCartMapper shoppingCartMapper;
 
     /**
-     * 用户下单
+     * Submit order (用户下单)
      * @param ordersSubmitDTO
      * @return
      */
@@ -49,14 +51,13 @@ public class OrderServiceImpl implements OrderService {
     @Transactional
     public OrderSubmitVO submitOrder(OrdersSubmitDTO ordersSubmitDTO) {
 
-        //处理各种业务异常（地址簿为空、购物车数据为空）
+        // Check address book
         AddressBook addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
         if(addressBook == null){
-            //抛出业务异常
             throw new AddressBookBusinessException(MessageConstant.ADDRESS_BOOK_IS_NULL);
         }
 
-        //查询当前用户的购物车数据
+        // Check shopping cart of current user
         Long userId = BaseContext.getCurrentId();
 
         ShoppingCart shoppingCart = new ShoppingCart();
@@ -64,11 +65,10 @@ public class OrderServiceImpl implements OrderService {
         List<ShoppingCart> shoppingCartList = shoppingCartMapper.list(shoppingCart);
 
         if(shoppingCartList == null || shoppingCartList.size() == 0){
-            //抛出业务异常
             throw new ShoppingCartBusinessException(MessageConstant.SHOPPING_CART_IS_NULL);
         }
 
-        //2. 向订单表插入1条数据
+        // Insert one order
         Orders orders = new Orders();
         BeanUtils.copyProperties(ordersSubmitDTO, orders);
         orders.setOrderTime(LocalDateTime.now());
@@ -82,20 +82,20 @@ public class OrderServiceImpl implements OrderService {
         orderMapper.insert(orders);
 
         List<OrderDetail> orderDetailList = new ArrayList<>();
-        //3. 向订单明细表插入n条数据
+        // Insert order details
         for (ShoppingCart cart : shoppingCartList) {
-            OrderDetail orderDetail = new OrderDetail();//订单明细
+            OrderDetail orderDetail = new OrderDetail();
             BeanUtils.copyProperties(cart, orderDetail);
-            orderDetail.setOrderId(orders.getId());//设置当前订单明细关联的订单id
+            orderDetail.setOrderId(orders.getId());
             orderDetailList.add(orderDetail);
         }
 
         orderDetailMapper.insertBatch(orderDetailList);
 
-        //4. 清空当前用户的购物车数据
+        // Clear shopping cart of current user
         shoppingCartMapper.deleteByUserId(userId);
 
-        //5. 封装VO返回结果
+        // Build result
         OrderSubmitVO orderSubmitVO = OrderSubmitVO.builder()
                 .id(orders.getId())
                 .orderTime(orders.getOrderTime())
@@ -104,5 +104,43 @@ public class OrderServiceImpl implements OrderService {
                 .build();
 
         return orderSubmitVO;
+    }
+
+    /**
+     * Pay order (simulated payment, skip WeChat Pay) (订单支付（模拟支付，跳过微信支付）)
+     * @param ordersPaymentDTO
+     * @return
+     */
+    @Override
+    @Transactional
+    public OrderPaymentVO payment(OrdersPaymentDTO ordersPaymentDTO) throws Exception {
+        // Simulate a successful payment directly
+        this.paySuccess(ordersPaymentDTO.getOrderNumber());
+
+        // Return an empty payment VO; frontend should skip wx.requestPayment
+        return OrderPaymentVO.builder().build();
+    }
+
+    /**
+     * Mark order as paid (支付成功，修改订单状态)
+     * @param outTradeNo
+     */
+    @Override
+    public void paySuccess(String outTradeNo) {
+        // Get order by order number
+        Orders ordersDB = orderMapper.getByNumber(outTradeNo);
+        if (ordersDB == null) {
+            throw new OrderBusinessException("Order not found");
+        }
+
+        // Update status, pay status and checkout time
+        Orders orders = Orders.builder()
+                .id(ordersDB.getId())
+                .status(Orders.TO_BE_CONFIRMED)
+                .payStatus(Orders.PAID)
+                .checkoutTime(LocalDateTime.now())
+                .build();
+
+        orderMapper.update(orders);
     }
 }
